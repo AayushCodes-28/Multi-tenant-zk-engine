@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "notice": "Demo fixture loaded in the trusted client and encrypted before server upload.",
+  "records": [
+    {
+      "id": "fin-001",
+      "tenant_id": "acme-finance",
+      "department": "finance",
+      "classification": 2,
+      "text": "Quarterly payroll review approved for the engineering division",
+      "amount": 125000
+    },
+    {
+      "id": "fin-002",
+      "tenant_id": "acme-finance",
+      "department": "finance",
+      "classification": 3,
+      "text": "Confidential acquisition reserve and treasury forecast",
+      "amount": 275000
+    },
+    {
+      "id": "fin-003",
+      "tenant_id": "acme-finance",
+      "department": "finance",
+      "classification": 1,
+      "text": "Approved travel reimbursement for quarterly planning",
+      "amount": 18000
+    },
+    {
+      "id": "med-001",
+      "tenant_id": "northstar-health",
+      "department": "clinical",
+      "classification": 2,
+      "text": "Cardiology patient blood pressure observation stable",
+      "amount": 118
+    },
+    {
+      "id": "med-002",
+      "tenant_id": "northstar-health",
+      "department": "clinical",
+      "classification": 3,
+      "text": "Cardiology patient followup requires medication review",
+      "amount": 132
+    },
+    {
+      "id": "med-003",
+      "tenant_id": "northstar-health",
+      "department": "clinical",
+      "classification": 1,
+      "text": "Routine wellness patient measurement within normal range",
+      "amount": 76
+    }
+  ]
+}
