@@ -1,80 +1,104 @@
 # Multi-Tenant Zero-Knowledge Cloud Engine
 
-Information Security Lab mini project. An honest-but-curious cloud server stores encrypted multi-tenant records, answers keyword searches and computes sums over ciphertexts, and never sees plaintext, keys or search words. The system also attacks its own leakage, measures it, and verifies that the server did not lie.
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![FastAPI](https://img.shields.io/badge/server-FastAPI-009688)
+![Streamlit](https://img.shields.io/badge/dashboard-Streamlit-FF4B4B)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-"Zero-knowledge" here means the server learns nothing beyond the leakage profile below. No zero-knowledge proofs are used.
+An untrusted cloud server that stores encrypted multi-tenant records, answers keyword searches and sums numbers over ciphertexts, without ever holding plaintext, keys or search words. The project also attacks its own searchable index, measures the leakage, and lets the client verify that the server did not lie.
 
-## What is different from a plain SSE + Paillier demo
+Information Security Lab mini project, MAHE Manipal.
 
-| Area | Implementation |
-|---|---|
-| Real trust boundary | FastAPI server and a separate client SDK. The server holds only ciphertexts, trapdoors, Paillier public keys and Merkle trees. |
-| Server-side ABAC | Ed25519-signed capability tokens carry the caller's attributes. The server verifies the signature, expiry and revocation, then runs the ABAC engine on every request and enforces per-record classification. |
-| Leakage attack lab | A frequency/count attack on posting-list sizes, evaluated against each defense with measured recovery rates. |
-| Defenses | Epoch-rotated trapdoors (unlinkable tokens across epochs) and decoy padding of posting lists to power-of-two sizes. |
-| Verifiable results | Sparse Merkle trees over the index and the records. Every search result carries a membership or absence proof checked against a root pinned by the client. |
-| Verified homomorphic sums | Weighted sums and averages over Paillier ciphertexts, with an optional audit that recomputes the result from proven ciphertexts. |
-| Tamper-evident audit | Per-tenant hash-chained log of every decision. |
+> "Zero-knowledge" here means the server learns nothing beyond the leakage listed below. No zero-knowledge proofs are used.
+
+## Features
+
+- **Blind keyword search** over an encrypted inverted index (HMAC-SHA256 trapdoors, AND/OR queries).
+- **Encrypted analytics** with Paillier: sum, weighted sum and average computed on ciphertexts.
+- **Server-side ABAC** driven by Ed25519-signed capability tokens (role, department, clearance, expiry, revocation) plus per-record classification checks.
+- **Verifiable results**: sparse Merkle trees over the index and the records. Dropped results, swapped records and forged sums are rejected by the client.
+- **Leakage attack lab**: a frequency/count attack on posting-list sizes, scored against two defenses (epoch-rotated trapdoors and decoy padding).
+- **Tamper-evident audit log**: per-tenant hash chain of every access decision.
+- **Live dashboard** with a client/server trace, the server's stored view, and switches that make the server malicious on demand.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Authority<br/>Ed25519 signer] -->|capability token| C
-    subgraph Client[Trusted client]
-        C[ZKClient SDK<br/>AES keys, HMAC key, Paillier private key<br/>pinned Merkle roots]
+    A[Authority<br/>Ed25519] -- capability token --> C
+    subgraph Trusted
+        C[Client SDK<br/>AES, HMAC and Paillier keys<br/>pinned Merkle roots]
     end
-    C -->|trapdoors, ciphertexts, token| S
-    subgraph Server[Untrusted server]
-        S[FastAPI<br/>ABAC + token check] --> I[Encrypted index<br/>+ Merkle tree]
-        S --> R[Encrypted records<br/>+ Merkle tree]
+    C -- trapdoors, ciphertexts, proofs request --> S
+    subgraph Untrusted
+        S[FastAPI server<br/>token check + ABAC] --> I[Encrypted index + Merkle tree]
+        S --> R[Encrypted records + Merkle tree]
         S --> P[Paillier aggregator]
         S --> L[Hash-chained audit log]
     end
-    S -->|result + proofs| C
+    S -- results + Merkle proofs --> C
     D[Streamlit dashboard] --> C
 ```
 
-## Cryptographic design
-
-| Component | Detail |
+| Piece | Detail |
 |---|---|
-| Record encryption | AES-256-CBC, encrypt-then-MAC (HMAC-SHA256), keys derived with HKDF and bound to the tenant. |
-| Trapdoor | `HMAC-SHA256(search_key, tenant ‖ epoch ‖ term)`. Terms are NFKC-normalised, case-folded and tokenised client-side. |
-| Aggregation | Paillier, ciphertext product mod n². Weights use ciphertext exponentiation (`c^w`, negative weights via modular inverse). The result is re-randomised before return. Average = decrypted sum / count, computed at the client. |
-| Capability token | `base64url(payload).base64url(Ed25519 signature)`. Payload: subject, tenant, role, department, clearance, `iat`, `exp`, `jti`. |
-| Authenticated index | Sparse Merkle tree, depth 40, key = `SHA-256(trapdoor)[:5]`, bucketed leaves. Leaf value is the digest of the sorted posting list. Absence proofs are native. |
-| Authenticated records | Same tree type, leaf value is the digest of `(id, payload, amount, department, classification)`. |
-| Audit entry | `hash = SHA-256(prev_hash ‖ canonical_json(entry))`. |
+| Record encryption | AES-256-CBC with HMAC-SHA256 (encrypt-then-MAC), HKDF-derived keys bound to the tenant |
+| Trapdoor | `HMAC-SHA256(search_key, tenant, epoch, term)` |
+| Aggregation | Paillier ciphertext product mod n², weights via exponentiation, result re-randomised |
+| Auth | Ed25519 token with subject, tenant, role, department, clearance, `iat`, `exp` |
+| Authenticated state | Sparse Merkle trees (depth 40) for the index and the records; the client keeps only the two roots |
 
-## Protocols
+## Quick start
 
-**Bulk load.** Client encrypts records, builds postings per epoch (optionally padded with decoys), builds both trees locally, uploads, and rejects the server if its roots differ. Only the two roots are kept.
+Requires Python 3.11+.
 
-**Incremental add.** For the record and every affected token the client fetches a proof, verifies it against its pinned root, computes the new root from the same sibling path, uploads, and checks the server reports the same root.
+```bash
+git clone https://github.com/AayushCodes-28/Multi-tenant-zk-engine
+cd Multi-tenant-zk-engine-main
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-**Search.** One trapdoor per epoch per term. The server returns the posting list and a proof. The client checks `digest(ids)` against the proven leaf (a dropped or added id fails), fetches the records with proofs, decrypts, and removes decoys by checking the term is really in the plaintext. AND/OR is combined at the client.
+The dashboard starts the API server itself on `127.0.0.1:8000` in demo mode and creates `.keys/authority.key` on first run. In the sidebar, click **Register tenants and load demo data**, then use the tabs. A step-by-step walkthrough is in [DEMO.md](DEMO.md).
 
-**Aggregate.** The client sends the exact id list it wants summed. The server rejects the whole request if any record is above the caller's clearance. The client decrypts the result. With audit on, it re-fetches the proven ciphertexts and compares; a forged sum raises `VerificationError`.
+Run the server on its own:
 
-**Epoch rotation.** `rotate_epoch()` changes the trapdoor key schedule. Documents added afterwards cannot be linked to tokens the server has already seen. Cost: each search sends one trapdoor per epoch per term.
+```bash
+ZK_DEMO=1 uvicorn src.server:create_app_from_env --factory --port 8000
+```
 
-## Threat model and leakage
+| Variable | Default | Purpose |
+|---|---|---|
+| `ZK_DEMO` | `0` | Enables tamper switches and the server-view endpoint. Off in any real deployment. |
+| `ZK_AUTHORITY_KEY` | `.keys/authority.key` | Authority key file, shared by server and token issuer |
+| `ZK_SERVER_URL` | `http://127.0.0.1:8000` | Server address used by the dashboard |
 
-| Adversary | Covered |
-|---|---|
-| Honest-but-curious server | Sees only ciphertexts and the leakage below. |
-| Malicious server | Dropped results, wrong index entries, swapped records and forged sums are detected (Merkle proofs and audit). |
-| Forged, expired, replayed-after-revoke or cross-tenant caller | Rejected server-side. |
-| Malicious client skipping UI checks | Irrelevant: all ABAC runs on the server. |
+## Using the SDK
 
-Still leaked to the server: record ids and sizes, `department` and `classification` (kept in plaintext for policy enforcement), access pattern (which ids match a trapdoor), search pattern within an epoch, padded posting-list sizes, and timing. A server that sees both the index and the records table can recognise decoys only by size correlation, not by identity.
+```python
+import httpx
+from src.client import ZKClient
+from src.crypto_engine import KeyMaterial
 
-## Measured attack results
+client = ZKClient(httpx.Client(base_url="http://127.0.0.1:8000"),
+                  KeyMaterial.generate("acme-finance", paillier_bits=2048),
+                  token=admin_token)
 
-`python -m src.attack` (2000 docs, 400-word Zipf vocabulary, top-40 words attacked, 5 trials). The attacker per epoch ranks tokens by posting size and matches them to an auxiliary frequency table. Random guessing scores about 0.25%.
+client.register({"department": "finance", "roles": ["analyst", "admin"], "writers": ["admin"]})
+client.bulk_load(rows, pad=True)
 
-| Defense | Top-40 recovery | Index size | Trapdoors per term query |
+result = client.search(["payroll", "quarterly"], mode="and")
+total, count = client.aggregate_search("payroll")
+client.rotate_epoch()
+```
+
+Tokens come from `Authority.issue(UserAttributes(...))` in `src/capability.py`. Every call that returns data raises `VerificationError` if a proof or the audited aggregate does not check out.
+
+## Leakage and defenses
+
+`python -m src.attack` runs a count attack: the server knows public word frequencies and matches posting-list sizes to keywords. Setup: 2000 documents, 400-word Zipf vocabulary, top 40 words attacked, 5 trials, attacker ranks tokens within each epoch. Random guessing is about 0.25%.
+
+| Defense | Keywords recovered | Index size | Trapdoors per term |
 |---|---|---|---|
 | none | 39.5% | 1.00x | 1 |
 | padding | 11.5% | 1.39x | 1 |
@@ -83,71 +107,80 @@ Still leaked to the server: record ids and sizes, `department` and `classificati
 | padding + epochs = 4 | 10.4% | 1.36x | 4 |
 | padding + epochs = 8 | 10.1% | 1.32x | 8 |
 
-Padding is the main defense against this attack. Epochs mainly give forward privacy and break cross-epoch linkage, with a smaller effect on this attack. Results are on synthetic data and a single attack family.
+Padding does most of the work against this attack. Epoch rotation mainly provides forward privacy: documents added after a rotation cannot be linked to tokens the server has already seen. These numbers are from synthetic data and one attack family.
 
-## Dashboard
+What the server still learns: record ids and sizes, `department` and `classification` (kept in plaintext so it can enforce policy), which ids match a token, repeated searches within an epoch, padded posting sizes and timing.
 
-Query (search, encrypted sum and average with verification status), client/server trace with the live audit chain and the server's stored view, leakage attack lab, malicious-server switches (drop result, forge sum, edit audit entry), and admin (add record, rotate epoch, revoke subject).
+## Threat model
+
+| Adversary | Outcome |
+|---|---|
+| Honest-but-curious server | Sees ciphertexts and the leakage above only |
+| Malicious server | Dropped or altered results, wrong records and forged sums are detected by the client |
+| Forged, expired, revoked or cross-tenant token | Rejected by the server |
+| Client that skips UI checks | No effect, ABAC runs server-side |
+| Network attacker | Out of scope, run behind TLS |
 
 ## API
 
-| Method | Path | Action checked |
+| Method | Path | Checked action |
 |---|---|---|
 | POST | `/tenants/{t}` | admin |
-| GET | `/t/{t}/roots` | read |
 | POST | `/t/{t}/bulk` | index |
-| GET, PUT | `/t/{t}/record/{id}/proof`, `/t/{t}/record/{id}` | index |
-| GET, PUT | `/t/{t}/index/{trapdoor}/proof`, `/t/{t}/index/{trapdoor}` | index |
+| GET, PUT | `/t/{t}/record/{id}[/proof]`, `/t/{t}/index/{trapdoor}[/proof]` | index |
 | POST | `/t/{t}/search` | search |
-| POST | `/t/{t}/fetch` | read, plus classification per record |
-| POST | `/t/{t}/aggregate` | aggregate, plus classification per record |
+| POST | `/t/{t}/fetch` | read + record classification |
+| POST | `/t/{t}/aggregate` | aggregate + record classification |
 | GET | `/t/{t}/audit` | audit |
 | POST | `/t/{t}/revoke` | admin |
-| POST, GET | `/_demo/*` | only when `ZK_DEMO=1` |
 
 ## Project layout
 
-| Path | Role |
-|---|---|
-| `src/crypto_engine.py` | AES-CBC + HMAC, HKDF, epoch trapdoors, Paillier wrapper |
-| `src/homomorphic.py` | Ciphertext sum and weighted aggregation |
-| `src/access_control.py` | ABAC engine |
-| `src/capability.py` | Ed25519 authority, token issue and verify |
-| `src/merkle.py` | Sparse Merkle tree, proofs, root updates from proofs |
-| `src/protocol.py` | Shared digests |
-| `src/server.py` | FastAPI server |
-| `src/client.py` | Verifying client SDK |
-| `src/audit.py` | Hash-chained audit log |
-| `src/attack.py` | Synthetic corpus, count attack, defense comparison |
-| `app.py` | Streamlit dashboard |
-| `tests/` | Crypto, ABAC, Merkle, tokens, audit, end-to-end system tests |
-
-## Run
-
-```bash
-pip install -r requirements.txt
-streamlit run app.py
+```
+app.py                  Streamlit dashboard
+src/
+  crypto_engine.py      AES-CBC + HMAC, HKDF, trapdoors, Paillier wrapper
+  homomorphic.py        Ciphertext sum and weighted aggregation
+  access_control.py     ABAC engine
+  capability.py         Ed25519 authority and token verification
+  merkle.py             Sparse Merkle tree and proofs
+  protocol.py           Shared digests
+  server.py             FastAPI server
+  client.py             Verifying client SDK
+  audit.py              Hash-chained audit log
+  attack.py             Corpus generator, count attack, defense comparison
+tests/                  Unit and end-to-end tests
+data/sample_records.json  Demo records for two tenants
 ```
 
-The dashboard starts the server automatically on `127.0.0.1:8000` with demo mode on and creates `.keys/authority.key`. To run the server yourself:
-
-```bash
-ZK_DEMO=1 uvicorn src.server:create_app_from_env --factory --port 8000
-```
-
-Use the same `ZK_AUTHORITY_KEY` path for the server and the dashboard, and set `ZK_SERVER_URL` for a remote server. Without `ZK_DEMO=1` the tamper and server-view endpoints do not exist.
+## Tests
 
 ```bash
 python -m pytest
-python -m src.attack
 ```
+
+27 tests covering crypto, ABAC, Merkle proofs, tokens, the audit chain, and end-to-end flows against the real API (clearance enforcement, revocation, tamper detection, no plaintext on the server).
 
 ## Limitations
 
 - Storage is in memory.
-- One writer pins the roots. Multi-client root synchronisation is not implemented.
-- Decoy padding is applied at bulk load only. Incremental adds are unpadded.
-- The aggregate audit downloads the summed ciphertexts, so use a sampling rate below 1 for large sets.
-- Search supports exact tokens with AND/OR. No ranking, prefix or fuzzy search.
-- No TLS in the demo. Run behind HTTPS in any real deployment.
-- Paillier supports sums and scalar weights only. Min, max and variance are out of scope.
+- One writer pins the Merkle roots. Multi-client root sync is not implemented.
+- Decoy padding happens at bulk load only. Incremental adds are unpadded.
+- The aggregate audit downloads the summed ciphertexts, so set `audit_rate` below 1 for large sets.
+- Search is exact-token only, with AND/OR. No prefix, fuzzy or ranked search.
+- Paillier gives sums and scalar weights only. No min, max or variance.
+- No TLS in the demo.
+
+## Team
+
+| Name | Roll no. |
+|---|---|
+| Divyansh Garg | 12 |
+| Upkirat Singh | 13 |
+| Aayush Kumar Singh | 14 |
+
+Guide: Abhishek A K
+
+## License
+
+MIT, see [LICENSE](LICENSE).
