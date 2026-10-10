@@ -1,21 +1,12 @@
-"""Server-side Paillier additive homomorphic accumulator."""
-
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
-
+import secrets
 from phe.paillier import EncryptedNumber, PaillierPublicKey
 
 ProgressCallback = Callable[[int, int, str], None]
 
-
 class HomomorphicAccumulator:
-    """Add encrypted integers by multiplying ciphertexts modulo ``n²``.
-
-    In Paillier, ``D(E(a) * E(b) mod n²) = a + b mod n``. The server only
-    needs the public key and never receives the private key.
-    """
-
     def __init__(self, public_key: PaillierPublicKey) -> None:
         self.public_key = public_key
 
@@ -44,3 +35,18 @@ class HomomorphicAccumulator:
         result.obfuscate()
         return result
 
+    @staticmethod
+    def aggregate_raw(public_key: PaillierPublicKey, ciphertexts: list[int], weights: list[int] | None = None) -> int:
+        modulus = public_key.nsquare
+        if weights is not None and len(weights) != len(ciphertexts):
+            raise ValueError("one weight per ciphertext is required")
+        accumulator = 1
+        for position, ciphertext in enumerate(ciphertexts):
+            if not 0 < ciphertext < modulus:
+                raise ValueError("ciphertext out of range")
+            weight = 1 if weights is None else weights[position]
+            if isinstance(weight, bool) or not isinstance(weight, int) or weight < 0:
+                raise ValueError("weights must be non-negative integers")
+            accumulator = accumulator * pow(ciphertext, weight, modulus) % modulus
+        blind = pow(secrets.randbelow(public_key.n - 1) + 1, public_key.n, modulus)
+        return accumulator * blind % modulus

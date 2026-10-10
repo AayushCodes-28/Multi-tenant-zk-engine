@@ -1,5 +1,3 @@
-"""Server-side opaque inverted index for blind exact-token search."""
-
 from __future__ import annotations
 
 import json
@@ -19,8 +17,6 @@ def _validate_trapdoor(value: str) -> None:
 
 @dataclass(slots=True)
 class EncryptedInvertedIndex:
-    """A per-tenant mapping from opaque trapdoors to document identifiers."""
-
     tenant_id: str
     _postings: dict[str, set[str]] = field(default_factory=dict)
 

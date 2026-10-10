@@ -1,10 +1,3 @@
-"""Client-side cryptographic primitives.
-
-The classes in this module belong on the trusted client.  Server components only
-receive authenticated ciphertext envelopes, Paillier public keys/ciphertexts,
-and opaque HMAC trapdoors.
-"""
-
 from __future__ import annotations
 
 import base64
@@ -25,8 +18,7 @@ from phe.paillier import EncryptedNumber, PaillierPrivateKey, PaillierPublicKey
 
 
 class CryptographicError(ValueError):
-    """Raised when cryptographic input or authentication is invalid."""
-
+    """agar kaam aaya toh dekhta"""
 
 def _b64encode(value: bytes) -> str:
     return base64.urlsafe_b64encode(value).decode("ascii")
@@ -41,8 +33,6 @@ def _b64decode(value: str) -> bytes:
 
 @dataclass(frozen=True, slots=True)
 class KeyMaterial:
-    """Per-tenant secrets and Paillier key pair held by the client."""
-
     tenant_id: str
     aes_master_key: bytes
     search_key: bytes
@@ -51,7 +41,6 @@ class KeyMaterial:
 
     @classmethod
     def generate(cls, tenant_id: str, *, paillier_bits: int = 2048) -> "KeyMaterial":
-        """Generate independent symmetric keys and a Paillier key pair."""
         if not tenant_id.strip():
             raise ValueError("tenant_id must not be empty")
         if paillier_bits < 1024:
@@ -62,8 +51,6 @@ class KeyMaterial:
 
 @dataclass(frozen=True, slots=True)
 class CiphertextEnvelope:
-    """Serializable AES-CBC encrypt-then-MAC envelope."""
-
     version: int
     algorithm: str
     iv: str
@@ -94,13 +81,6 @@ class CiphertextEnvelope:
 
 
 class AESCBCCipher:
-    """AES-256-CBC with PKCS#7 padding and encrypt-then-MAC authentication.
-
-    CBC alone is malleable. Separate encryption and authentication subkeys are
-    derived from a 256-bit master key, and the tenant ID is authenticated to
-    prevent cross-tenant ciphertext substitution.
-    """
-
     VERSION = 1
     ALGORITHM = "AES-256-CBC+HMAC-SHA256"
 
@@ -112,10 +92,15 @@ class AESCBCCipher:
         self._tenant_id = tenant_id
         context = tenant_id.encode("utf-8")
         expanded = HKDF(master_key, 64, b"zkce-aes-v1", SHA256, context=context)
-        self._encryption_key, self._mac_key = expanded[:32], expanded[32:]
+        if not isinstance(expanded, bytes):
+            raise CryptographicError("Unexpected HKDF output type")
+
+        self._encryption_key: bytes = expanded[:32]
+        self._mac_key: bytes = expanded[32:]
+
+
 
     def encrypt(self, plaintext: str) -> CiphertextEnvelope:
-        """Encrypt and authenticate UTF-8 text using a fresh random IV."""
         if not isinstance(plaintext, str):
             raise TypeError("plaintext must be a string")
         iv = get_random_bytes(AES.block_size)
@@ -125,7 +110,6 @@ class AESCBCCipher:
         return CiphertextEnvelope(self.VERSION, self.ALGORITHM, _b64encode(iv), _b64encode(ciphertext), _b64encode(tag))
 
     def decrypt(self, envelope: CiphertextEnvelope | Mapping[str, Any]) -> str:
-        """Authenticate then decrypt an envelope; never decrypts invalid input."""
         if not isinstance(envelope, CiphertextEnvelope):
             envelope = CiphertextEnvelope.from_dict(envelope)
         if envelope.version != self.VERSION or envelope.algorithm != self.ALGORITHM:
@@ -147,19 +131,15 @@ class AESCBCCipher:
 
 
 def normalize_term(term: str) -> str:
-    """Normalize one search term deterministically on the trusted client."""
     return unicodedata.normalize("NFKC", term).casefold().strip()
 
 
 def tokenize(text: str) -> set[str]:
-    """Extract normalized Unicode word tokens for client-side indexing."""
     normalized = unicodedata.normalize("NFKC", text).casefold()
     return {token for token in re.findall(r"[^\W_]+", normalized, flags=re.UNICODE) if token}
 
 
 class TrapdoorGenerator:
-    """Create deterministic, tenant-bound HMAC-SHA256 search trapdoors."""
-
     def __init__(self, search_key: bytes, tenant_id: str) -> None:
         if len(search_key) < 32:
             raise ValueError("search key must contain at least 32 bytes")
@@ -168,17 +148,20 @@ class TrapdoorGenerator:
         self._search_key = search_key
         self._prefix = b"zkce:sse:v1\x00" + tenant_id.encode("utf-8") + b"\x00"
 
-    def create(self, term: str) -> str:
+    def create(self, term: str, epoch: int = 0) -> str:
         terms = tokenize(term)
         if len(terms) != 1:
             raise ValueError("search term must be one non-empty token")
-        normalized = next(iter(terms))
-        return hmac.new(self._search_key, self._prefix + normalized.encode("utf-8"), hashlib.sha256).hexdigest()
+        if epoch < 0:
+            raise ValueError("epoch must not be negative")
+        message = self._prefix + str(epoch).encode() + b"\x00" + next(iter(terms)).encode("utf-8")
+        return hmac.new(self._search_key, message, hashlib.sha256).hexdigest()
+
+    def create_all(self, term: str, current_epoch: int) -> list[str]:
+        return [self.create(term, epoch) for epoch in range(current_epoch + 1)]
 
 
 class PaillierClient:
-    """Trusted-client wrapper for Paillier encryption and decryption."""
-
     def __init__(self, public_key: PaillierPublicKey, private_key: PaillierPrivateKey) -> None:
         if private_key.public_key.n != public_key.n:
             raise ValueError("Paillier public/private keys do not match")
