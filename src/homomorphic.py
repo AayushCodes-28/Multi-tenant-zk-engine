@@ -45,8 +45,8 @@ class HomomorphicAccumulator:
             if not 0 < ciphertext < modulus:
                 raise ValueError("ciphertext out of range")
             weight = 1 if weights is None else weights[position]
-            if isinstance(weight, bool) or not isinstance(weight, int) or weight < 0:
-                raise ValueError("weights must be non-negative integers")
+            # if isinstance(weight, bool) or not isinstance(weight, int):
+            #     raise ValueError("weights must be integers")
             accumulator = accumulator * pow(ciphertext, weight, modulus) % modulus
         blind = pow(secrets.randbelow(public_key.n - 1) + 1, public_key.n, modulus)
         return accumulator * blind % modulus
