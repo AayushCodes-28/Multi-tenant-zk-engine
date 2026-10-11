@@ -159,7 +159,7 @@ data/sample_records.json  Demo records for two tenants
 python -m pytest
 ```
 
-27 tests covering crypto, ABAC, Merkle proofs, tokens, the audit chain, and end-to-end flows against the real API (clearance enforcement, revocation, tamper detection, no plaintext on the server).
+29 tests covering crypto, ABAC, Merkle proofs, tokens, the audit chain, and end-to-end flows against the real API (clearance enforcement, revocation, tamper detection, no plaintext on the server).
 
 ## Limitations
 

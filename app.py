@@ -99,9 +99,6 @@ def setup(bits: int, pad: bool) -> None:
     st.session_state.found = None
 
 
-def tamper(mode: str | None) -> None:
-    http().post("/_demo/tamper", json={"mode": mode})
-
 
 st.title("Multi-Tenant Zero-Knowledge Cloud Engine")
 server_process()
@@ -123,6 +120,7 @@ with st.sidebar:
     clearance = st.slider("Clearance level", 0, 3, 2)
     department = st.selectbox("Department", [cfg["department"], "other"])
     subject = st.text_input("Subject id", f"{role}-{clearance}")
+    pace = st.slider("Trace speed (seconds per step)", 0.0, 1.0, 0.3)
 
 clients: dict[str, ZKClient] = st.session_state.get("clients", {})
 client = clients.get(tenant)
@@ -140,8 +138,27 @@ def as_admin() -> ZKClient:
     client.token = admin_token(tenant)
     return client
 
+def traced(title: str, action: Callable[[ZKClient], Any], who: Callable[[], ZKClient] = as_caller) -> Any:
+    caller = who()
+    caller.steps.clear()
+    outcome, error = None, None
+    try:
+        outcome = action(caller)
+    except (VerificationError, ApiError, httpx.HTTPError, ValueError) as exc:
+        error = exc
+    with st.status(title, expanded=True) as box:
+        for number, (actor, text) in enumerate(caller.steps, 1):
+            st.markdown(f"{number}. **{actor}:** {text}")
+            time.sleep(pace)
+        if error is None:
+            box.update(label=f"{title}: every check passed", state="complete")
+        else:
+            st.markdown(f"**Client:** REJECTED - {error}")
+            box.update(label=f"{title}: rejected", state="error")
+    return outcome
 
-query_tab, trace_tab, attack_tab, tamper_tab, admin_tab = st.tabs(["Query", "Client / server trace", "Leakage attack lab", "Malicious server", "Admin"])
+
+query_tab, trace_tab, attack_tab, eve_tab, admin_tab = st.tabs(["Query", "Client / server trace", "Leakage attack lab", "Eve: insider attack", "Admin"])
 
 with query_tab:
     left, right = st.columns([3, 1])
@@ -150,26 +167,23 @@ with query_tab:
     audit = st.checkbox("Audit homomorphic result against committed ciphertexts", value=True)
     search_col, sum_col, avg_col = st.columns(3)
     if search_col.button("Search"):
-        st.session_state.found = guard(lambda: as_caller().search(terms, mode))
+        st.session_state.found = traced("Search pipeline", lambda c: c.search(terms, mode))
     found = st.session_state.get("found")
     if found:
-        st.caption(f"{found.lookups} trapdoor lookups, {found.candidates} candidates (incl. decoys), {found.denied} hidden by clearance, all index and record proofs verified")
+        st.caption(f"{found.lookups} trapdoor lookups, {found.candidates} candidates (incl. decoys), {found.denied} hidden by clearance")
         st.dataframe(pd.DataFrame(found.records), use_container_width=True, hide_index=True)
     for button, label in ((sum_col, "Encrypted sum"), (avg_col, "Encrypted average")):
         if button.button(label):
-            def run() -> None:
-                caller = as_caller()
-                result = caller.search(terms, mode)
-                ids = [r["id"] for r in result.records]
-                if not ids:
-                    st.info("No matching records")
-                    return
-                total = caller.aggregate(ids, audit=audit)
-                expected = sum(r["amount"] for r in result.records)
-                st.metric(label, f"{total if label.endswith('sum') else total / len(ids):,.2f}")
-                st.caption(f"Plaintext cross-check: {expected:,} ({'match' if expected == total else 'MISMATCH'}), {len(ids)} records")
+            def run(c: ZKClient) -> tuple[list[dict[str, Any]], int] | None:
+                rows = c.search(terms, mode).records
+                return (rows, c.aggregate([r["id"] for r in rows], audit=audit)) if rows else None
 
-            guard(run)
+            outcome = traced(f"{label} pipeline", run)
+            if outcome:
+                rows, total = outcome
+                expected = sum(r["amount"] for r in rows)
+                st.metric(label, f"{total if label.endswith('sum') else total / len(rows):,.2f}")
+                st.caption(f"Plaintext cross-check: {expected:,} ({'match' if expected == total else 'MISMATCH'}), {len(rows)} records")
 
 with trace_tab:
     c1, c2 = st.columns(2)
@@ -203,24 +217,86 @@ with attack_tab:
         st.dataframe(frame, use_container_width=True, hide_index=True)
         st.bar_chart(frame.set_index("defense")["top_k_recovery_pct"])
 
-with tamper_tab:
-    st.write("Switch the server into malicious mode and watch the client reject its answers.")
-    modes = {"Honest": None, "Drop one search result": "drop_result", "Forge encrypted sum": "forge_sum"}
-    for label, mode_value in modes.items():
-        if st.button(label, key=f"mode-{label}"):
-            tamper(mode_value)
-            st.toast(f"Server mode: {label}")
-    if st.button("Edit a server audit entry"):
-        http().post(f"/_demo/audit-edit/{tenant}")
-    if st.button("Run search + sum with audit"):
-        def probe() -> None:
-            caller = as_caller()
-            result = caller.search("payroll" if tenant == "acme-finance" else "patient", "or")
-            st.success(f"{len(result.records)} verified records")
-            st.success(f"Verified sum: {caller.aggregate([r['id'] for r in result.records], audit=True):,}")
+with eve_tab:
+    st.info(
+        "**The question:** what if the cloud server is hacked or run by someone dishonest? "
+        "**Eve** has full control of the server but never gets the client's secret keys. "
+        "Left column: what Eve sees or does. Right column: what the client sees and verifies. "
+        "Three scenarios: can Eve read the data, can she learn secrets from patterns, can she tamper without being caught."
+    )
+    word = st.text_input("Keyword Eve is after", "payroll" if tenant == "acme-finance" else "patient", key="eve-word")
 
-        guard(probe)
+    st.subheader("1. Can Eve read our data?")
+    st.caption("Click Dump to see exactly what is stored on the server, then Decrypt to see what the client can read from the same data.")
+    left, right = st.columns(2)
+    left.markdown("#### What Eve sees (server storage)")
+    if left.button("Dump server database"):
+        st.session_state.dump = (tenant, http().get(f"/_demo/eve/dump/{tenant}").json())
+    saved = st.session_state.get("dump")
+    if saved and saved[0] == tenant:
+        dump = saved[1]
+        left.dataframe(pd.DataFrame(dump["records"]), use_container_width=True, hide_index=True)
+        left.dataframe(pd.DataFrame(dump["postings"]), use_container_width=True, hide_index=True)
+        left.metric(f"Occurrences of '{word}' in raw storage", dump["raw"].lower().count(word.lower()))
+        left.caption("Department and classification are stored in plaintext, so Eve does learn those.")
+    right.markdown("#### What the client sees")
+    if right.button("Decrypt with the client's local keys"):
+        with right:
+            hits = guard(lambda: as_admin().search(word, "or"))
+            if hits:
+                st.dataframe(pd.DataFrame(hits.records), use_container_width=True, hide_index=True)
+    st.success("**Takeaway:** the server holds the data but cannot read it; only the key holder can. Eve still sees department, classification and which records match a search.")
 
+    st.subheader("2. Can Eve learn secrets just by watching patterns?")
+    st.caption("Even encrypted, patterns leak: a search token matching many records is probably a common word. Eve ranks tokens by match count and guesses the words. The chart shows how often she is right, with and without our defenses.")
+    if st.button("Run Eve's attack (synthetic corpus, 1500 docs, 3 trials)"):
+        with st.spinner("Attacking"):
+            st.session_state.eve_attack = pd.DataFrame(run_attack(1500, 400, 14, 40, 3, defenses=(DEFENSES[0], DEFENSES[1], DEFENSES[5])))
+    result = st.session_state.get("eve_attack")
+    if result is not None:
+        left, right = st.columns(2)
+        left.markdown("#### Top-40 keywords Eve recovers (%)")
+        left.bar_chart(result.set_index("defense")["top_k_recovery_pct"])
+        right.markdown("#### What the defense costs")
+        right.dataframe(result[["defense", "index_size_x", "lookups_per_query"]], use_container_width=True, hide_index=True)
+        st.caption(f"Eve recovers {result.top_k_recovery_pct.iloc[0]}% undefended and {result.top_k_recovery_pct.iloc[-1]}% with padding + epochs. The defense reduces the leak a lot but does not remove it.")
+        st.success("**Takeaway:** the attack works on the plain scheme, and padding plus epoch rotation cut Eve's success by about 4x. It is measured on generated test data, not real documents.")
+
+    st.subheader("3. Can Eve change things without getting caught?")
+    st.caption("Step 1: click one of Eve's cheats on the left. Step 2: click 'Client searches and sums' on the right and watch whether the client notices. Click Undo before trying the next cheat.")
+
+    st.subheader("3. Eve tampers with the data")
+    left, right = st.columns(2)
+    left.markdown("#### Eve's actions on the server")
+    attacks = {
+        "Flip bytes in every stored ciphertext": (f"/_demo/eve/corrupt/{tenant}", None),
+        "Inject a forged id into every posting list": (f"/_demo/eve/inject/{tenant}", None),
+        "Drop one result from every search": ("/_demo/tamper", {"mode": "drop_result"}),
+        "Forge the encrypted sum": ("/_demo/tamper", {"mode": "forge_sum"}),
+        "Edit an audit log entry": (f"/_demo/audit-edit/{tenant}", None),
+    }
+    for label, (path, body) in attacks.items():
+        if left.button(label):
+            http().post(path, json=body)
+            left.warning(f"Done: {label}")
+    if left.button("Undo all of Eve's changes"):
+        http().post(f"/_demo/eve/restore/{tenant}")
+        left.success("Server restored")
+    right.markdown("#### The client's verdict")
+    if right.button("Client searches and sums"):
+        def probe(c: ZKClient) -> tuple[int, int | None]:
+            rows = c.search(word, "or").records
+            return len(rows), (c.aggregate([r["id"] for r in rows], audit=True) if rows else None)
+
+        with right:
+            verdict = traced(f"Search + sum for '{word}'", probe, who=as_admin)
+            if verdict:
+                st.success(f"{verdict[0]} verified record(s), verified sum {verdict[1]}")
+    if right.button("Check the audit chain"):
+        log = guard(lambda: as_admin().audit_log())
+        if log:
+            right.success("Hash chain intact") if log["valid"] else right.error(f"BUSTED: chain broken at entry {log['bad_seq']}")
+        st.success("**Takeaway:** when the client uploaded, it saved a short fingerprint (a Merkle root) of everything. Every server answer must come with a proof matching it, so any change fails the check. We detect cheating; we cannot stop Eve from corrupting data.")
 with admin_tab:
     text = st.text_input("New record text", "Payroll correction for support staff")
     amount = st.number_input("Amount", value=500)

@@ -6,6 +6,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
+import json
 
 from fastapi import FastAPI, HTTPException, Request
 from phe.paillier import PaillierPublicKey
@@ -317,12 +318,61 @@ def create_app(authority_public: bytes, *, demo: bool = False, clock: Callable[[
             tamper["mode"] = body.mode
             return tamper
 
+        undo: dict[str, list[Callable[[], None]]] = {}
+
         @app.post("/_demo/audit-edit/{tenant_id}")
         def edit_audit(tenant_id: str) -> dict[str, int]:
             entries = tenants[tenant_id].audit.entries
             target = max(0, len(entries) // 2)
-            entries[target]["reason"] = "EDITED"
+            entry = entries[target]
+            had, original = "reason" in entry, entry.get("reason")
+            entry["reason"] = "EDITED"
+            undo.setdefault(tenant_id, []).append(lambda: entry.__setitem__("reason", original) if had else entry.pop("reason"))
             return {"seq": target}
+
+        @app.get("/_demo/eve/dump/{tenant_id}")
+        def eve_dump(tenant_id: str) -> dict[str, Any]:
+            tenant = tenants[tenant_id]
+            records = [
+                {
+                    "id": r["id"],
+                    "iv": r["payload"]["iv"],
+                    "ciphertext": r["payload"]["ciphertext"][:40] + "...",
+                    "mac": r["payload"]["mac"][:16] + "...",
+                    "amount_ciphertext": r["amount"][:24] + "...",
+                    "department": r["department"],
+                    "classification": r["classification"],
+                }
+                for r in tenant.records.values()
+            ]
+            postings = [{"trapdoor": t[:16] + "...", "doc_ids": ", ".join(ids)} for t, ids in tenant.postings.items()]
+            return {"records": records, "postings": postings, "raw": json.dumps({"records": tenant.records, "postings": tenant.postings})}
+
+        @app.post("/_demo/eve/corrupt/{tenant_id}")
+        def eve_corrupt(tenant_id: str) -> dict[str, int]:
+            records = tenants[tenant_id].records.values()
+            for record in records:
+                original = record["payload"]["ciphertext"]
+                record["payload"]["ciphertext"] = ("A" if original[0] != "A" else "B") + original[1:]
+                undo.setdefault(tenant_id, []).append(lambda r=record, o=original: r["payload"].__setitem__("ciphertext", o))
+            return {"corrupted": len(records)}
+
+        @app.post("/_demo/eve/inject/{tenant_id}")
+        def eve_inject(tenant_id: str) -> dict[str, int]:
+            postings = tenants[tenant_id].postings
+            for token, ids in postings.items():
+                original = list(ids)
+                postings[token] = [*ids, "eve-forged"]
+                undo.setdefault(tenant_id, []).append(lambda t=token, o=original: postings.__setitem__(t, o))
+            return {"injected": len(postings)}
+
+        @app.post("/_demo/eve/restore/{tenant_id}")
+        def eve_restore(tenant_id: str) -> dict[str, int]:
+            actions = undo.pop(tenant_id, [])
+            for action in reversed(actions):
+                action()
+            tamper["mode"] = None
+            return {"restored": len(actions)}
 
         @app.get("/_demo/view/{tenant_id}")
         def server_view(tenant_id: str) -> dict[str, Any]:
