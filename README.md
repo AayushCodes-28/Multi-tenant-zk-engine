@@ -1,220 +1,186 @@
 # Multi-Tenant Zero-Knowledge Cloud Engine
 
-A runnable educational cloud-security system in which an honest-but-curious server performs exact-token search and integer summation over encrypted tenant data. The server receives no AES/search secret keys, Paillier private keys, plaintext documents, numeric values, or plaintext query terms.
+![Python](https://img.shields.io/badge/python-3.11%2B-blue)
+![FastAPI](https://img.shields.io/badge/server-FastAPI-009688)
+![Streamlit](https://img.shields.io/badge/dashboard-Streamlit-FF4B4B)
+![License](https://img.shields.io/badge/license-MIT-green)
 
-> **Terminology:** "zero-knowledge" describes the project's application-level privacy goal. This implementation is not a formal zero-knowledge proof protocol. See [Threat model and limitations](#threat-model-and-limitations).
+An untrusted cloud server that stores encrypted multi-tenant records, answers keyword searches and sums numbers over ciphertexts, without ever holding plaintext, keys or search words. The project also attacks its own searchable index, measures the leakage, and lets the client verify that the server did not lie.
 
-## Live demo features
+Information Security Lab mini project, MAHE Manipal.
 
-- Isolated cryptographic keys and encrypted indexes for two sample tenants.
-- AES-256-CBC document encryption with PKCS#7 padding and encrypt-then-MAC integrity.
-- HMAC-SHA256 exact-token trapdoors generated only after ABAC authorization.
-- Paillier encrypted integer sums computed as ciphertext multiplication modulo `n²`.
-- Split-screen Streamlit UI with trusted-client controls and sanitized server logs.
-- Deny-by-default ABAC checks for tenant, role, department, clearance, and UTC session hour.
-- A client-side record form and one-click sample-data bootstrap.
+> "Zero-knowledge" here means the server learns nothing beyond the leakage listed below. No zero-knowledge proofs are used.
+
+## Features
+
+- **Blind keyword search** over an encrypted inverted index (HMAC-SHA256 trapdoors, AND/OR queries).
+- **Encrypted analytics** with Paillier: sum, weighted sum and average computed on ciphertexts.
+- **Server-side ABAC** driven by Ed25519-signed capability tokens (role, department, clearance, expiry, revocation) plus per-record classification checks.
+- **Verifiable results**: sparse Merkle trees over the index and the records. Dropped results, swapped records and forged sums are rejected by the client.
+- **Leakage attack lab**: a frequency/count attack on posting-list sizes, scored against two defenses (epoch-rotated trapdoors and decoy padding).
+- **Tamper-evident audit log**: per-tenant hash chain of every access decision.
+- **Live dashboard** with a client/server trace, the server's stored view, and switches that make the server malicious on demand.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    subgraph Client[Trusted client]
-        P[Plaintext records]
-        K[Per-tenant key vault]
-        D[Decrypt result]
+    A[Authority<br/>Ed25519] -- capability token --> C
+    subgraph Trusted
+        C[Client SDK<br/>AES, HMAC and Paillier keys<br/>pinned Merkle roots]
     end
-    subgraph Gate[Policy boundary]
-        A[ABAC decision]
+    C -- trapdoors, ciphertexts, proofs request --> S
+    subgraph Untrusted
+        S[FastAPI server<br/>token check + ABAC] --> I[Encrypted index + Merkle tree]
+        S --> R[Encrypted records + Merkle tree]
+        S --> P[Paillier aggregator]
+        S --> L[Hash-chained audit log]
     end
-    subgraph Server[Untrusted server]
-        I[Opaque SSE index]
-        C[Encrypted records]
-        H[Paillier accumulator]
-    end
-    P --> K
-    K -->|ciphertexts + trapdoors| A
-    A -->|authorized request| I
-    I --> C
-    C --> H
-    H -->|encrypted sum| D
+    S -- results + Merkle proofs --> C
+    D[Streamlit dashboard] --> C
 ```
 
-The demo maintains the separation inside one Streamlit process so it is easy to run. `ClientVault` objects live only in `st.session_state.vaults`; simulated server state lives under `st.session_state.server` and contains only public keys, ciphertexts, opaque index tokens, document identifiers, and explicit policy metadata.
-
-## Cryptographic design
-
-### Authenticated AES-CBC documents
-
-The synopsis requires AES-CBC. Because unauthenticated CBC is malleable, `AESCBCCipher` derives two independent 256-bit subkeys from a random tenant master key using HKDF-SHA256. It encrypts UTF-8 text with a fresh 128-bit IV and PKCS#7 padding, then authenticates the version, tenant ID, IV, and ciphertext with HMAC-SHA256. Decryption verifies the MAC in constant time before invoking AES.
-
-For new real-world designs, prefer a vetted AEAD construction such as AES-GCM or ChaCha20-Poly1305. CBC is retained here to satisfy the lab specification.
-
-### Blind searchable encryption
-
-The trusted client normalizes a single token and computes:
-
-```text
-trapdoor = HMAC-SHA256(search_key, domain || tenant_id || normalized_term)
-```
-
-During indexing, only these trapdoors and document IDs are sent to the server. During search, the server performs a dictionary lookup using the received 256-bit token. Domain and tenant binding prevent accidental cross-protocol or cross-tenant token reuse.
-
-### Paillier homomorphic sum
-
-For Paillier public key `(n, g)`, multiplying two ciphertexts produces an encryption of the plaintext sum:
-
-```text
-E(m1) × E(m2) mod n² = E(m1 + m2 mod n)
-```
-
-`HomomorphicAccumulator` performs that multiplication using only the public key and ciphertexts. It returns one re-randomized encrypted total. The matching tenant client alone decrypts the result. The demo accepts integer values so every input has a consistent exponent.
-
-### ABAC enforcement
-
-Every operation is denied unless all applicable attributes pass:
-
-1. The action is recognized and the session is authenticated.
-2. The user's tenant equals the resource tenant.
-3. The role is allowed.
-4. The department matches (an in-tenant admin may span departments).
-5. Clearance meets the policy minimum.
-6. The current UTC hour is within the policy window.
-
-Search authorization happens **before** the client creates a query trapdoor. Per-record classification is also checked before matching documents are decrypted.
-
-## Repository layout
-
-```text
-multi-tenant-zk-engine/
-├── .streamlit/
-│   └── config.toml
-├── app.py
-├── Dockerfile
-├── data/
-│   └── sample_records.json
-├── src/
-│   ├── __init__.py
-│   ├── access_control.py
-│   ├── crypto_engine.py
-│   ├── homomorphic.py
-│   └── sse_engine.py
-├── tests/
-│   ├── test_access_control.py
-│   ├── test_crypto_engine.py
-│   └── test_sse_homomorphic.py
-├── .gitignore
-├── LICENSE
-├── pyproject.toml
-├── requirements.txt
-└── README.md
-```
+| Piece | Detail |
+|---|---|
+| Record encryption | AES-256-CBC with HMAC-SHA256 (encrypt-then-MAC), HKDF-derived keys bound to the tenant |
+| Trapdoor | `HMAC-SHA256(search_key, tenant, epoch, term)` |
+| Aggregation | Paillier ciphertext product mod n², weights via exponentiation, result re-randomised |
+| Auth | Ed25519 token with subject, tenant, role, department, clearance, `iat`, `exp` |
+| Authenticated state | Sparse Merkle trees (depth 40) for the index and the records; the client keeps only the two roots |
 
 ## Quick start
 
-Requirements: Python 3.11 or newer.
+Requires Python 3.11+.
 
 ```bash
-git clone <your-repository-url>
-cd multi-tenant-zk-engine
-python -m venv .venv
-```
-
-Activate the environment:
-
-```bash
-# Linux/macOS
-source .venv/bin/activate
-
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-```
-
-Install and launch:
-
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+git clone https://github.com/AayushCodes-28/Multi-tenant-zk-engine
+cd Multi-tenant-zk-engine-main
+pip install -r requirements.txt
 streamlit run app.py
 ```
 
-Open the local URL printed by Streamlit (normally `http://localhost:8501`).
+The dashboard starts the API server itself on `127.0.0.1:8000` in demo mode and creates `.keys/authority.key` on first run. In the sidebar, click **Register tenants and load demo data**, then use the tabs. A step-by-step walkthrough is in [DEMO.md](DEMO.md).
 
-## Deploy as a website
-
-The interface uses a restrained technical layout with a system overview, query workspace, ingestion form, protocol notes, and a filterable execution trace. No external database or environment variable is required for the demo.
-
-### Streamlit Community Cloud
-
-1. Push this folder to a GitHub repository.
-2. In Streamlit Community Cloud, create an app from that repository.
-3. Set the entry point to `app.py` and choose Python 3.11 or newer.
-4. Deploy. Dependencies are installed automatically from `requirements.txt`.
-
-### Docker / Render / Railway
-
-The included `Dockerfile` honors the platform-provided `PORT` variable:
+Run the server on its own:
 
 ```bash
-docker build -t ciphercloud .
-docker run --rm -p 8501:8501 ciphercloud
+ZK_DEMO=1 uvicorn src.server:create_app_from_env --factory --port 8000
 ```
 
-For a public deployment, remember that demo keys and records live in each Streamlit session and reset when that session or instance is recycled. Add external encrypted persistence and a real identity provider before treating the service as anything beyond a demonstration.
+| Variable | Default | Purpose |
+|---|---|---|
+| `ZK_DEMO` | `0` | Enables tamper switches and the server-view endpoint. Off in any real deployment. |
+| `ZK_AUTHORITY_KEY` | `.keys/authority.key` | Authority key file, shared by server and token issuer |
+| `ZK_SERVER_URL` | `http://127.0.0.1:8000` | Server address used by the dashboard |
 
-## Demo walkthrough
+## Using the SDK
 
-1. Click **Load Demo Data**. The fixture is read on the trusted-client side; independent keys are generated and every record is encrypted before simulated upload.
-2. Choose `acme-finance`, keep the `admin` role and clearance `3`, then search for `quarterly`.
-3. Observe that the server log shows only a fingerprint of an opaque token, the match count, and latency—not the keyword.
-4. Click **Compute encrypted sum**. The server log displays each ciphertext multiplication step; only the client displays the decrypted total.
-5. Change the role to `guest`, department to a mismatched value, or clearance to `0` to see ABAC deny the request.
-6. Switch to `northstar-health` and search for `patient` or `cardiology` to verify tenant isolation.
+```python
+import httpx
+from src.client import ZKClient
+from src.crypto_engine import KeyMaterial
 
-The `data/sample_records.json` file is deliberately a client-side demo fixture. It is not the simulated server database. Clicking the button constructs the encrypted in-memory server state; plaintext fixture records are never copied into that state.
+client = ZKClient(httpx.Client(base_url="http://127.0.0.1:8000"),
+                  KeyMaterial.generate("acme-finance", paillier_bits=2048),
+                  token=admin_token)
+
+client.register({"department": "finance", "roles": ["analyst", "admin"], "writers": ["admin"]})
+client.bulk_load(rows, pad=True)
+
+result = client.search(["payroll", "quarterly"], mode="and")
+total, count = client.aggregate_search("payroll")
+client.rotate_epoch()
+```
+
+Tokens come from `Authority.issue(UserAttributes(...))` in `src/capability.py`. Every call that returns data raises `VerificationError` if a proof or the audited aggregate does not check out.
+
+## Leakage and defenses
+
+`python -m src.attack` runs a count attack: the server knows public word frequencies and matches posting-list sizes to keywords. Setup: 2000 documents, 400-word Zipf vocabulary, top 40 words attacked, 5 trials, attacker ranks tokens within each epoch. Random guessing is about 0.25%.
+
+| Defense | Keywords recovered | Index size | Trapdoors per term |
+|---|---|---|---|
+| none | 39.5% | 1.00x | 1 |
+| padding | 11.5% | 1.39x | 1 |
+| epochs = 4 | 31.8% | 1.00x | 4 |
+| epochs = 8 | 24.8% | 1.00x | 8 |
+| padding + epochs = 4 | 10.4% | 1.36x | 4 |
+| padding + epochs = 8 | 10.1% | 1.32x | 8 |
+
+Padding does most of the work against this attack. Epoch rotation mainly provides forward privacy: documents added after a rotation cannot be linked to tokens the server has already seen. These numbers are from synthetic data and one attack family.
+
+What the server still learns: record ids and sizes, `department` and `classification` (kept in plaintext so it can enforce policy), which ids match a token, repeated searches within an epoch, padded posting sizes and timing.
+
+## Threat model
+
+| Adversary | Outcome |
+|---|---|
+| Honest-but-curious server | Sees ciphertexts and the leakage above only |
+| Malicious server | Dropped or altered results, wrong records and forged sums are detected by the client |
+| Forged, expired, revoked or cross-tenant token | Rejected by the server |
+| Client that skips UI checks | No effect, ABAC runs server-side |
+| Network attacker | Out of scope, run behind TLS |
+
+## API
+
+| Method | Path | Checked action |
+|---|---|---|
+| POST | `/tenants/{t}` | admin |
+| POST | `/t/{t}/bulk` | index |
+| GET, PUT | `/t/{t}/record/{id}[/proof]`, `/t/{t}/index/{trapdoor}[/proof]` | index |
+| POST | `/t/{t}/search` | search |
+| POST | `/t/{t}/fetch` | read + record classification |
+| POST | `/t/{t}/aggregate` | aggregate + record classification |
+| GET | `/t/{t}/audit` | audit |
+| POST | `/t/{t}/revoke` | admin |
+
+## Project layout
+
+```
+app.py                  Streamlit dashboard
+src/
+  crypto_engine.py      AES-CBC + HMAC, HKDF, trapdoors, Paillier wrapper
+  homomorphic.py        Ciphertext sum and weighted aggregation
+  access_control.py     ABAC engine
+  capability.py         Ed25519 authority and token verification
+  merkle.py             Sparse Merkle tree and proofs
+  protocol.py           Shared digests
+  server.py             FastAPI server
+  client.py             Verifying client SDK
+  audit.py              Hash-chained audit log
+  attack.py             Corpus generator, count attack, defense comparison
+tests/                  Unit and end-to-end tests
+data/sample_records.json  Demo records for two tenants
+```
 
 ## Tests
 
 ```bash
-pytest
+python -m pytest
 ```
 
-The suite covers authenticated AES round trips and tamper rejection, tenant-scoped trapdoors, ABAC allow/deny paths, blind index behavior, encrypted summation, and encrypted zero for empty aggregates.
+27 tests covering crypto, ABAC, Merkle proofs, tokens, the audit chain, and end-to-end flows against the real API (clearance enforcement, revocation, tamper detection, no plaintext on the server).
 
-## Threat model and limitations
+## Limitations
 
-The prototype assumes an **honest-but-curious** server that follows the protocol but tries to infer information from what it sees.
+- Storage is in memory.
+- One writer pins the Merkle roots. Multi-client root sync is not implemented.
+- Decoy padding happens at bulk load only. Incremental adds are unpadded.
+- The aggregate audit downloads the summed ciphertexts, so set `audit_rate` below 1 for large sets.
+- Search is exact-token only, with AND/OR. No prefix, fuzzy or ranked search.
+- Paillier gives sums and scalar weights only. No min, max or variance.
+- No TLS in the demo.
 
-What is protected:
+## Team
 
-- Document bodies and integer values at rest in simulated server memory.
-- Plaintext search terms.
-- Symmetric keys and Paillier private keys.
-- Cross-tenant queries through both cryptographic key separation and ABAC checks.
+| Name | Roll no. |
+|---|---|
+| Divyansh Garg | 12 |
+| Upkirat Singh | 13 |
+| Aayush Kumar Singh | 14 |
 
-What is intentionally visible or leaked:
-
-- Tenant IDs, document IDs, ciphertext lengths, and policy metadata.
-- Equality/search-pattern leakage because the same term produces the same trapdoor within a tenant.
-- Access-pattern and response-size leakage from matching document IDs.
-- Index update patterns and the number of indexed tokens.
-
-Not provided by this prototype:
-
-- Protection from a malicious server that drops, reorders, or substitutes Paillier inputs/results.
-- Forward-private/dynamic SSE, OR/phrase/range queries, ranked search, or result padding.
-- Hardware-backed client key storage, rotation, revocation, recovery, or multi-device key distribution.
-- Durable server persistence, network transport, authentication provider integration, audit-log signing, rate limiting, or denial-of-service protection.
-- Formal cryptographic review or compliance certification.
-
-For deployment, split client and server into distinct services, use TLS and an identity provider, store client keys in a platform keystore/HSM, adopt a reviewed SSE protocol with the leakage profile your use case permits, use 2048-bit or stronger Paillier keys according to current policy, authenticate aggregate inputs/results, and obtain an independent security assessment.
-
-## Security hygiene
-
-- The logging function accepts only deliberately constructed summaries. Never log key objects, ciphertext envelopes, full trapdoors, plaintext, or decrypted totals on the server side.
-- The repository ignores `.env`, Streamlit secrets, persistent server state, SQLite files, and Python build artifacts.
-- Keys are generated in memory on every demo reload and are not exported.
-- Dependency versions are pinned for reproducible classroom/demo builds; update them through a tested dependency-review process.
+Guide: Abhishek A K
 
 ## License
 
-[MIT](LICENSE)
+MIT, see [LICENSE](LICENSE).

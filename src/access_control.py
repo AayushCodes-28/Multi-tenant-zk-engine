@@ -1,12 +1,8 @@
-"""Attribute-Based Access Control (ABAC) policy evaluation."""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import FrozenSet
-
-
 @dataclass(frozen=True, slots=True)
 class UserAttributes:
     subject_id: str
@@ -42,13 +38,11 @@ class AccessDecision:
 
 
 class ABACEngine:
-    """Deny-by-default evaluator for tenant, role, department, level and time."""
-
-    SUPPORTED_ACTIONS = frozenset({"search", "aggregate", "read", "index"})
+    SUPPORTED_ACTIONS = frozenset({"search", "aggregate", "read", "index", "audit", "admin"})
 
     def evaluate(self, request: AccessRequest) -> AccessDecision:
         user, policy = request.user, request.resource
-        hour = datetime.now().hour if request.hour_utc is None else request.hour_utc
+        hour = datetime.now(timezone.utc).hour if request.hour_utc is None else request.hour_utc
         if request.action not in self.SUPPORTED_ACTIONS:
             return self._deny("UNSUPPORTED_ACTION", "The requested action is not recognized")
         if not 0 <= hour <= 23:
@@ -82,8 +76,6 @@ class ABACEngine:
 
 
 def hmac_safe_equal(left: str, right: str) -> bool:
-    """Compare policy identifiers without data-dependent early exit."""
     import hmac
-
     return hmac.compare_digest(left.encode("utf-8"), right.encode("utf-8"))
 

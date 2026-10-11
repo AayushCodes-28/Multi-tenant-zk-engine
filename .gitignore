@@ -12,3 +12,4 @@ data/server_state.json
 *.sqlite3
 .DS_Store
 
+.keys/
