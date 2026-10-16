@@ -100,6 +100,11 @@ def _unpack(proof: dict[str, Any]) -> tuple[dict[str, bytes], list[bytes]]:
         raise ProofError("wrong proof length")
     return bucket, siblings
 
+def recompute(key: str, proof: dict[str, Any]) -> tuple[bytes, bytes]:
+    bucket, siblings = _unpack(proof)
+    leaf = leaf_hash(bucket)
+    return leaf, fold(leaf, position(key), siblings)
+
 
 def verify(root: bytes, key: str, proof: dict[str, Any]) -> bytes | None:
     bucket, siblings = _unpack(proof)

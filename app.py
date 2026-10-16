@@ -121,6 +121,7 @@ with st.sidebar:
     department = st.selectbox("Department", [cfg["department"], "other"])
     subject = st.text_input("Subject id", f"{role}-{clearance}")
     pace = st.slider("Trace speed (seconds per step)", 0.0, 1.0, 0.3)
+    show_full = st.checkbox("Show full ciphertexts (no truncation)", value=False)
 
 clients: dict[str, ZKClient] = st.session_state.get("clients", {})
 client = clients.get(tenant)
@@ -140,6 +141,7 @@ def as_admin() -> ZKClient:
 
 def traced(title: str, action: Callable[[ZKClient], Any], who: Callable[[], ZKClient] = as_caller) -> Any:
     caller = who()
+    caller.full_values = show_full
     caller.steps.clear()
     outcome, error = None, None
     try:
@@ -147,8 +149,10 @@ def traced(title: str, action: Callable[[ZKClient], Any], who: Callable[[], ZKCl
     except (VerificationError, ApiError, httpx.HTTPError, ValueError) as exc:
         error = exc
     with st.status(title, expanded=True) as box:
-        for number, (actor, text) in enumerate(caller.steps, 1):
+        for number, (actor, text, values) in enumerate(caller.steps, 1):
             st.markdown(f"{number}. **{actor}:** {text}")
+            if values:
+                st.code("\n".join(f"{name}: {value}" for name, value in values.items()), language=None, wrap_lines=True)
             time.sleep(pace)
         if error is None:
             box.update(label=f"{title}: every check passed", state="complete")
@@ -171,7 +175,10 @@ with query_tab:
     found = st.session_state.get("found")
     if found:
         st.caption(f"{found.lookups} trapdoor lookups, {found.candidates} candidates (incl. decoys), {found.denied} hidden by clearance")
-        st.dataframe(pd.DataFrame(found.records), use_container_width=True, hide_index=True)
+        frame = pd.DataFrame(found.records)
+        if not st.checkbox("Show encrypted columns and record digest next to the plaintext", value=True):
+            frame = frame.drop(columns=["aes_ciphertext", "paillier_amount", "record_digest"])
+        st.dataframe(frame, use_container_width=True, hide_index=True)
     for button, label in ((sum_col, "Encrypted sum"), (avg_col, "Encrypted average")):
         if button.button(label):
             def run(c: ZKClient) -> tuple[list[dict[str, Any]], int] | None:
@@ -194,9 +201,11 @@ with trace_tab:
     if log:
         c2.success("Hash chain intact") if log["valid"] else c2.error(f"Chain broken at entry {log['bad_seq']}")
         frame = pd.DataFrame(log["entries"]).fillna("").astype(str)
-        cols = [c for c in ("seq", "component", "action", "decision", "reason", "detail", "ms", "hash") if c in frame]
-        frame["hash"] = frame["hash"].str[:10]
-        c2.dataframe(frame[cols].iloc[::-1].head(40), use_container_width=True, hide_index=True)
+        cols = [c for c in ("seq", "component", "action", "decision", "reason", "detail", "ms", "prev", "hash") if c in frame]
+        frame["hash"] = frame["hash"].str[:16]
+        frame["prev"] = frame["prev"].str[:16]
+        with c2.expander("Latest audit entry with full hashes"):
+            st.json(log["entries"][-1])
     st.subheader("What the server stores")
     view = http().get(f"/_demo/view/{tenant}").json()
     v1, v2 = st.columns(2)
@@ -297,6 +306,7 @@ with eve_tab:
         if log:
             right.success("Hash chain intact") if log["valid"] else right.error(f"BUSTED: chain broken at entry {log['bad_seq']}")
         st.success("**Takeaway:** when the client uploaded, it saved a short fingerprint (a Merkle root) of everything. Every server answer must come with a proof matching it, so any change fails the check. We detect cheating; we cannot stop Eve from corrupting data.")
+        
 with admin_tab:
     text = st.text_input("New record text", "Payroll correction for support staff")
     amount = st.number_input("Amount", value=500)

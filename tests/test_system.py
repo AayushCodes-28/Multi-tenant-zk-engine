@@ -198,8 +198,10 @@ def test_execution_steps_report_real_verification(env):
     _, client, _ = env
     client.steps.clear()
     client.search("payroll")
-    text = " ".join(t for _, t in client.steps)
+    text = " ".join(step[1] for step in client.steps)
     assert "derived trapdoor" in text and "matches pinned" in text and "decrypted" in text
+    assert {step[0] for step in client.steps} == {"Client", "Server"}
+    assert any(len(v) == 64 for step in client.steps for v in step[2].values())
     assert {actor for actor, _ in client.steps} == {"Client", "Server"}
     http, _, _ = env
     http.post("/_demo/tamper", json={"mode": "drop_result"})
