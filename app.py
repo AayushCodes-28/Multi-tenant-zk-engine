@@ -99,7 +99,6 @@ def setup(bits: int, pad: bool) -> None:
     st.session_state.found = None
 
 
-
 st.title("Multi-Tenant Zero-Knowledge Cloud Engine")
 server_process()
 if not reachable():
@@ -138,6 +137,7 @@ def as_caller() -> ZKClient:
 def as_admin() -> ZKClient:
     client.token = admin_token(tenant)
     return client
+
 
 def traced(title: str, action: Callable[[ZKClient], Any], who: Callable[[], ZKClient] = as_caller) -> Any:
     caller = who()
@@ -204,6 +204,7 @@ with trace_tab:
         cols = [c for c in ("seq", "component", "action", "decision", "reason", "detail", "ms", "prev", "hash") if c in frame]
         frame["hash"] = frame["hash"].str[:16]
         frame["prev"] = frame["prev"].str[:16]
+        c2.dataframe(frame[cols].iloc[::-1].head(40), use_container_width=True, hide_index=True)
         with c2.expander("Latest audit entry with full hashes"):
             st.json(log["entries"][-1])
     st.subheader("What the server stores")
@@ -246,6 +247,10 @@ with eve_tab:
         dump = saved[1]
         left.dataframe(pd.DataFrame(dump["records"]), use_container_width=True, hide_index=True)
         left.dataframe(pd.DataFrame(dump["postings"]), use_container_width=True, hide_index=True)
+        stored = json.loads(dump["raw"])["records"]
+        if stored:
+            left.markdown("**One stored record, exactly as Eve sees it**")
+            left.code(json.dumps(next(iter(stored.values())), indent=2), language="json", wrap_lines=True)
         left.metric(f"Occurrences of '{word}' in raw storage", dump["raw"].lower().count(word.lower()))
         left.caption("Department and classification are stored in plaintext, so Eve does learn those.")
     right.markdown("#### What the client sees")
@@ -273,8 +278,6 @@ with eve_tab:
 
     st.subheader("3. Can Eve change things without getting caught?")
     st.caption("Step 1: click one of Eve's cheats on the left. Step 2: click 'Client searches and sums' on the right and watch whether the client notices. Click Undo before trying the next cheat.")
-
-    st.subheader("3. Eve tampers with the data")
     left, right = st.columns(2)
     left.markdown("#### Eve's actions on the server")
     attacks = {
@@ -286,8 +289,9 @@ with eve_tab:
     }
     for label, (path, body) in attacks.items():
         if left.button(label):
-            http().post(path, json=body)
+            reply = http().post(path, json=body).json()
             left.warning(f"Done: {label}")
+            left.code(json.dumps(reply, indent=2), language="json", wrap_lines=True)
     if left.button("Undo all of Eve's changes"):
         http().post(f"/_demo/eve/restore/{tenant}")
         left.success("Server restored")
@@ -304,9 +308,13 @@ with eve_tab:
     if right.button("Check the audit chain"):
         log = guard(lambda: as_admin().audit_log())
         if log:
-            right.success("Hash chain intact") if log["valid"] else right.error(f"BUSTED: chain broken at entry {log['bad_seq']}")
-        st.success("**Takeaway:** when the client uploaded, it saved a short fingerprint (a Merkle root) of everything. Every server answer must come with a proof matching it, so any change fails the check. We detect cheating; we cannot stop Eve from corrupting data.")
-        
+            if log["valid"]:
+                right.success("Hash chain intact")
+            else:
+                right.error(f"BUSTED: chain broken at entry {log['bad_seq']}")
+                right.code(json.dumps(log["detail"], indent=2), language="json", wrap_lines=True)
+    st.success("**Takeaway:** when the client uploaded, it saved a short fingerprint (a Merkle root) of everything. Every server answer must come with a proof matching it, so any change fails the check. We detect cheating; we cannot stop Eve from corrupting data.")
+
 with admin_tab:
     text = st.text_input("New record text", "Payroll correction for support staff")
     amount = st.number_input("Amount", value=500)

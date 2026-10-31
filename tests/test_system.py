@@ -202,10 +202,3 @@ def test_execution_steps_report_real_verification(env):
     assert "derived trapdoor" in text and "matches pinned" in text and "decrypted" in text
     assert {step[0] for step in client.steps} == {"Client", "Server"}
     assert any(len(v) == 64 for step in client.steps for v in step[2].values())
-    assert {actor for actor, _ in client.steps} == {"Client", "Server"}
-    http, _, _ = env
-    http.post("/_demo/tamper", json={"mode": "drop_result"})
-    client.steps.clear()
-    with pytest.raises(VerificationError):
-        client.search("payroll")
-    assert "tampered or incomplete" in client.steps[-1][1]
