@@ -174,3 +174,31 @@ def test_server_view_contains_no_plaintext(env):
     view = http.get("/_demo/view/acme").text
     for word in ("payroll", "vendor", "engineering", "1200"):
         assert word not in view
+        
+def test_eve_cannot_read_dump_and_tampering_is_caught_then_restored(env):
+    http, client, _ = env
+    raw = http.get("/_demo/eve/dump/acme").json()["raw"].lower()
+    assert all(word not in raw for word in ("payroll", "engineering", "vendor", "1200"))
+    http.post("/_demo/eve/corrupt/acme")
+    with pytest.raises(VerificationError, match="commitment"):
+        client.search("payroll")
+    http.post("/_demo/eve/restore/acme")
+    http.post("/_demo/eve/inject/acme")
+    with pytest.raises(VerificationError, match="tampered or incomplete"):
+        client.search("payroll")
+    http.post("/_demo/eve/restore/acme")
+    assert {r["id"] for r in client.search("payroll").records} == {"r1", "r2", "r4"}
+    http.post("/_demo/audit-edit/acme")
+    assert not client.audit_log()["valid"]
+    http.post("/_demo/eve/restore/acme")
+    assert client.audit_log()["valid"]
+
+
+def test_execution_steps_report_real_verification(env):
+    _, client, _ = env
+    client.steps.clear()
+    client.search("payroll")
+    text = " ".join(step[1] for step in client.steps)
+    assert "derived trapdoor" in text and "matches pinned" in text and "decrypted" in text
+    assert {step[0] for step in client.steps} == {"Client", "Server"}
+    assert any(len(v) == 64 for step in client.steps for v in step[2].values())

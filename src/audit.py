@@ -25,7 +25,12 @@ class AuditLog:
 
     def verify(self) -> tuple[bool, int | None]:
         return verify_entries(self.entries)
+    
 
+def recompute_hash(entries: list[dict[str, Any]], position: int) -> str:
+    previous = entries[position - 1]["hash"] if position else GENESIS
+    body = {k: v for k, v in entries[position].items() if k not in ("prev", "hash")}
+    return _digest(previous, body)
 
 def verify_entries(entries: list[dict[str, Any]]) -> tuple[bool, int | None]:
     previous = GENESIS
